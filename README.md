@@ -91,11 +91,16 @@ kokoro --speed 1.2 --text "Faster speech"
 kokoro --lang b --voice bf_emma --text "Cheerio"
 ```
 
-### Quiet mode
+### Verbose mode
+
+Output is quiet by default. Use `-v` to see progress details.
 
 ```bash
-# Suppress all progress output (only errors on stderr)
-echo "Hello" | kokoro -q
+# Show voice mix, chunk info, and progress
+kokoro -v --random-voice --text "Hello"
+
+# Default (quiet) — no output except errors
+kokoro --text "Hello"
 ```
 
 ### All options
@@ -106,14 +111,14 @@ Usage: kokoro [OPTIONS]
 Options:
   -t, --text TEXT     Text to synthesize. If omitted, reads from stdin.
   -f, --file PATH     Read text from a file.
-  -v, --voice TEXT    Voice name or weighted mix.  [default: af_sky]
+  --voice TEXT        Voice name or weighted mix.  [default: af_sky]
   -r, --random-voice  Use a random mix of 2-3 voices.
   -s, --speed FLOAT   Speech speed multiplier.  [default: 1.0]
   -l, --lang TEXT     Language code.  [default: a]
   -o, --output PATH   Save audio to a WAV file instead of playing.
   -m, --model TEXT    HuggingFace model ID or local path.
   --list-voices       List all available voices and exit.
-  -q, --quiet         Suppress progress output.
+  -v, --verbose       Show progress output (voice mix, chunk info, etc.).
   -h, --help          Show this message and exit.
 ```
 

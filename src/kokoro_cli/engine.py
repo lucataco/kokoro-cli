@@ -4,6 +4,10 @@ Handles model loading, voice mixing, and audio generation using the
 mlx-audio library for native Apple Silicon acceleration.
 """
 
+import contextlib
+import io
+import logging
+import os
 import random
 import time
 from collections.abc import Iterator
@@ -17,9 +21,36 @@ from kokoro_cli.config import (
     VOICES,
 )
 
+# Suppress noisy output from huggingface_hub and mlx_audio before they're imported.
+# HF_HUB_DISABLE_PROGRESS_BARS kills the tqdm "Fetching 63 files" bars.
+# HF_HUB_DISABLE_TELEMETRY kills the "Download complete" line.
+os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
+os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
+logging.getLogger("huggingface_hub").setLevel(logging.WARNING)
+
 # Lazy-loaded model singleton
 _model = None
 _model_path = None
+
+
+@contextlib.contextmanager
+def _suppress_stdout():
+    """Temporarily redirect stdout to devnull.
+
+    Used to silence print() calls inside mlx_audio internals
+    (e.g., "Creating new KokoroPipeline for language: a").
+    Redirects both the Python-level sys.stdout and the underlying
+    file descriptor to catch all output.
+    """
+    import sys
+
+    old_sys_stdout = sys.stdout
+    sys.stdout = open(os.devnull, "w")
+    try:
+        yield
+    finally:
+        sys.stdout.close()
+        sys.stdout = old_sys_stdout
 
 
 def load_model(model_path: str = DEFAULT_MODEL):
@@ -41,7 +72,9 @@ def load_model(model_path: str = DEFAULT_MODEL):
 
     from mlx_audio.tts.utils import load_model as mlx_load_model
 
-    _model = mlx_load_model(model_path)
+    with _suppress_stdout():
+        _model = mlx_load_model(model_path)
+
     _model_path = model_path
     return _model
 
@@ -138,7 +171,8 @@ def _blend_voices_on_pipeline(pipeline, voice_weights: dict[str, float]) -> str:
     weights = []
 
     for voice_name, weight in voice_weights.items():
-        pack = pipeline.load_single_voice(voice_name)
+        with _suppress_stdout():
+            pack = pipeline.load_single_voice(voice_name)
         packs.append(pack)
         weights.append(weight)
 
@@ -185,34 +219,44 @@ def generate(
     if len(voice_weights) > 1:
         # Multi-voice mix: we need to drive the pipeline directly
         # because model.generate() resets pipeline.voices = {} each call
-        pipeline = model._get_pipeline(lang_code)
-        pipeline.voices = {}  # match what model.generate does
+        with _suppress_stdout():
+            pipeline = model._get_pipeline(lang_code)
+            pipeline.voices = {}  # match what model.generate does
+            cache_key = _blend_voices_on_pipeline(pipeline, voice_weights)
 
-        cache_key = _blend_voices_on_pipeline(pipeline, voice_weights)
+        # Collect all audio chunks (generation is fast, ~30x realtime)
+        audio_chunks = []
+        with _suppress_stdout():
+            for _graphemes, _phonemes, audio in pipeline(
+                text, voice=cache_key, speed=speed
+            ):
+                audio = audio[0] if audio.ndim > 1 else audio
+                audio = np.array(audio, dtype=np.float32)
+                audio_chunks.append(audio)
 
-        for _graphemes, _phonemes, audio in pipeline(
-            text, voice=cache_key, speed=speed
-        ):
-            audio = audio[0] if audio.ndim > 1 else audio
-            audio = np.array(audio, dtype=np.float32)
-            yield audio
+        yield from audio_chunks
     else:
         # Single voice: use the standard model.generate path
         effective_voice = next(iter(voice_weights.keys()))
 
-        for result in model.generate(
-            text,
-            voice=effective_voice,
-            speed=speed,
-            lang_code=lang_code,
-        ):
-            audio = result.audio
-            # Convert from mx.array to numpy if needed
-            if hasattr(audio, "tolist"):
-                audio = np.array(audio, dtype=np.float32)
-            elif not isinstance(audio, np.ndarray):
-                audio = np.array(audio, dtype=np.float32)
-            else:
-                audio = audio.astype(np.float32)
+        # Collect results inside _suppress_stdout to catch all internal prints
+        # (e.g., "Creating new KokoroPipeline for language: a").
+        # Generation is ~30x realtime so this adds negligible latency.
+        audio_chunks = []
+        with _suppress_stdout():
+            for result in model.generate(
+                text,
+                voice=effective_voice,
+                speed=speed,
+                lang_code=lang_code,
+            ):
+                audio = result.audio
+                if hasattr(audio, "tolist"):
+                    audio = np.array(audio, dtype=np.float32)
+                elif not isinstance(audio, np.ndarray):
+                    audio = np.array(audio, dtype=np.float32)
+                else:
+                    audio = audio.astype(np.float32)
+                audio_chunks.append(audio)
 
-            yield audio
+        yield from audio_chunks

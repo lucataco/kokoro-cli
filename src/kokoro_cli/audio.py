@@ -10,6 +10,11 @@ import soundfile as sf
 
 from kokoro_cli.config import SAMPLE_RATE
 
+# Sub-chunk size for writes: 0.2s at 24kHz.
+# Keeps Ctrl+C responsive — Python can only handle KeyboardInterrupt
+# between blocking calls, so smaller writes = faster interrupt response.
+_WRITE_CHUNK_SAMPLES = 4800
+
 
 def play_audio_blocking(audio: np.ndarray, sample_rate: int = SAMPLE_RATE) -> None:
     """Play an audio array and block until finished."""
@@ -21,7 +26,8 @@ class StreamPlayer:
     """Streams audio chunks to speakers with minimal latency.
 
     Uses a sounddevice OutputStream that accepts numpy arrays and plays
-    them sequentially without gaps between chunks.
+    them sequentially without gaps between chunks. Writes are broken into
+    small sub-chunks (~0.2s) so that Ctrl+C is handled promptly.
     """
 
     def __init__(self, sample_rate: int = SAMPLE_RATE):
@@ -40,6 +46,10 @@ class StreamPlayer:
     def write(self, audio: np.ndarray) -> None:
         """Write an audio chunk to the stream for playback.
 
+        The audio is written in small sub-chunks so that KeyboardInterrupt
+        (Ctrl+C) can be caught between writes rather than blocking for the
+        entire duration of a large chunk.
+
         Args:
             audio: 1D float32 numpy array of audio samples.
         """
@@ -54,7 +64,12 @@ class StreamPlayer:
         if audio.dtype != np.float32:
             audio = audio.astype(np.float32)
 
-        self._stream.write(audio)
+        # Write in small sub-chunks for responsive Ctrl+C handling
+        offset = 0
+        while offset < len(audio):
+            end = min(offset + _WRITE_CHUNK_SAMPLES, len(audio))
+            self._stream.write(audio[offset:end])
+            offset = end
 
     def stop(self) -> None:
         """Stop and close the audio stream."""

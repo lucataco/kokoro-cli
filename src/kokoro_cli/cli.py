@@ -43,7 +43,6 @@ from kokoro_cli.config import (
 )
 @click.option(
     "--voice",
-    "-v",
     type=str,
     default=DEFAULT_VOICE,
     show_default=True,
@@ -94,11 +93,11 @@ from kokoro_cli.config import (
     help="List all available voices and exit.",
 )
 @click.option(
-    "--quiet",
-    "-q",
+    "--verbose",
+    "-v",
     is_flag=True,
     default=False,
-    help="Suppress progress output.",
+    help="Show progress output (voice mix, chunk info, etc.).",
 )
 def main(
     text: str | None,
@@ -110,7 +109,7 @@ def main(
     output: str | None,
     model: str,
     list_voices: bool,
-    quiet: bool,
+    verbose: bool,
 ) -> None:
     """Kokoro TTS — fast local text-to-speech on Apple Silicon.
 
@@ -142,7 +141,7 @@ def main(
 
         voice_mix = random_voice_mix(lang_code=lang)
         voice_spec = ",".join(f"{v}:{w:.2f}" for v, w in voice_mix.items())
-        if not quiet:
+        if verbose:
             click.echo(f"Random voice mix: {voice_spec}", err=True)
     else:
         voice_spec = voice
@@ -152,7 +151,7 @@ def main(
 
     chunks = chunk_text(input_text)
 
-    if not quiet:
+    if verbose:
         n_chars = len(input_text)
         n_chunks = len(chunks)
         click.echo(
@@ -163,9 +162,9 @@ def main(
 
     # Generate and play/save
     if output:
-        _generate_to_file(chunks, voice_spec, speed, model, lang, output, quiet)
+        _generate_to_file(chunks, voice_spec, speed, model, lang, output, verbose)
     else:
-        _generate_and_stream(chunks, voice_spec, speed, model, lang, quiet)
+        _generate_and_stream(chunks, voice_spec, speed, model, lang, verbose)
 
 
 def _resolve_input(text: str | None, filepath: str | None) -> str:
@@ -190,7 +189,7 @@ def _generate_and_stream(
     speed: float,
     model_path: str,
     lang: str,
-    quiet: bool,
+    verbose: bool,
 ) -> None:
     """Generate audio from chunks and stream to speakers."""
     from kokoro_cli.audio import StreamPlayer
@@ -199,7 +198,7 @@ def _generate_and_stream(
     try:
         with StreamPlayer() as player:
             for i, chunk in enumerate(chunks):
-                if not quiet:
+                if verbose:
                     # Show chunk progress on stderr
                     preview = chunk[:60] + "..." if len(chunk) > 60 else chunk
                     click.echo(f"  [{i + 1}/{len(chunks)}] {preview}", err=True)
@@ -213,11 +212,11 @@ def _generate_and_stream(
                 ):
                     player.write(audio_chunk)
 
-        if not quiet:
+        if verbose:
             click.echo("Done.", err=True)
 
     except KeyboardInterrupt:
-        if not quiet:
+        if verbose:
             click.echo("\nInterrupted.", err=True)
         sys.exit(130)
 
@@ -229,7 +228,7 @@ def _generate_to_file(
     model_path: str,
     lang: str,
     output_path: str,
-    quiet: bool,
+    verbose: bool,
 ) -> None:
     """Generate audio from chunks and save to a file."""
     from kokoro_cli.audio import save_audio
@@ -239,7 +238,7 @@ def _generate_to_file(
 
     try:
         for i, chunk in enumerate(chunks):
-            if not quiet:
+            if verbose:
                 preview = chunk[:60] + "..." if len(chunk) > 60 else chunk
                 click.echo(f"  [{i + 1}/{len(chunks)}] {preview}", err=True)
 
@@ -253,13 +252,13 @@ def _generate_to_file(
                 all_audio.append(audio_chunk)
 
     except KeyboardInterrupt:
-        if not quiet:
+        if verbose:
             click.echo("\nInterrupted. Saving partial audio...", err=True)
 
     if all_audio:
         combined = np.concatenate(all_audio)
         save_audio(combined, output_path, SAMPLE_RATE)
-        if not quiet:
+        if verbose:
             duration = len(combined) / SAMPLE_RATE
             click.echo(
                 f"Saved {duration:.1f}s of audio to {output_path}",
