@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+build/
+dist/
+wheels/
+*.egg-info/
+*.egg
+
+# Virtual environments
+.venv/
+
+# uv
+uv.lock
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Testing / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Generated audio
+*.wav
+*.mp3
+
+# Model cache (downloaded on first run)
+*.safetensors
+*.bin
+*.pt
+
+# Environment / secrets
+.env
+.env.*
