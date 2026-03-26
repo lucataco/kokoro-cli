@@ -119,8 +119,55 @@ Options:
   -m, --model TEXT    HuggingFace model ID or local path.
   --list-voices       List all available voices and exit.
   -v, --verbose       Show progress output (voice mix, chunk info, etc.).
+  --no-daemon         Skip daemon, use direct mode.
   -h, --help          Show this message and exit.
+
+Daemon:
+  kokoro serve   Start the TTS daemon
+  kokoro stop    Stop the TTS daemon
 ```
+
+## Daemon mode
+
+The model and G2P pipeline take ~2.7s to load on first use. The daemon keeps them warm in memory so subsequent calls are near-instant.
+
+### How it works
+
+On first invocation, `kokoro` auto-starts a background daemon that loads the model and listens on a Unix socket (`~/.kokoro/kokoro.sock`). Subsequent calls connect to the daemon instead of loading the model from scratch.
+
+```
+First call:     auto-starts daemon (~2.7s), then generates via daemon (~0.5s)
+Second call:    connects to warm daemon (~0.5s)
+```
+
+### Manual daemon management
+
+```bash
+# Start in foreground (useful for debugging, shows logs)
+kokoro serve
+
+# Start in background (detaches from terminal)
+kokoro serve --daemon
+
+# Stop the daemon
+kokoro stop
+
+# Skip daemon, use direct mode
+kokoro --no-daemon --text "Hello"
+```
+
+### Performance comparison
+
+| Mode | Time to audio | Notes |
+|------|--------------|-------|
+| Direct (cold) | ~3.5s | Loads model + G2P every time |
+| Daemon (first call) | ~3.4s | Auto-starts daemon, then uses it |
+| Daemon (warm) | ~0.5s | **7x faster** — model already in memory |
+
+Daemon state is stored in `~/.kokoro/`:
+- `kokoro.sock` — Unix domain socket
+- `kokoro.pid` — daemon process ID
+- `kokoro.log` — daemon log output
 
 ## Voices
 
@@ -143,22 +190,32 @@ Run `kokoro --list-voices` for the full list.
 ## How it works
 
 ```
-Text input (stdin / --text / --file)
+kokoro --text "Hello"
         |
-   chunker.py    Split at sentence boundaries (~1500 chars/chunk)
+        |  Is daemon running?
+        |
+   ┌────┴─── Yes ──────────────────┐
+   |                                |
+   |  client.py ──Unix socket──> server.py
+   |    Send JSON request           Warm model generates audio
+   |    Receive audio chunks        Streams chunks back
+   |                                |
+   └────┬─── No ───────────────────┘
+        |
+        |  Auto-start daemon, or --no-daemon for direct mode
         |
    engine.py     MLX model generates audio via Metal GPU
-        |                (voice blending happens here)
         |
-   audio.py      sounddevice streams chunks to speakers
-        |                as they are generated
-        v
+   chunker.py    Text split at sentence boundaries (~1500 chars/chunk)
+        |
+   audio.py      sounddevice streams chunks to speakers as generated
+        |
    Speaker output (or WAV file with --output)
 ```
 
-- **Chunking**: Long text is split at sentence boundaries so each chunk fits within Kokoro's ~510 phoneme token window. Fallback splits at clauses, commas, then word boundaries.
-- **Streaming**: Audio plays as soon as each chunk is generated. No waiting for the full text to finish.
-- **Model caching**: The MLX model is loaded once as a singleton and reused across chunks.
+- **Daemon**: Background process keeps model + G2P warm. Communicates via Unix socket with binary audio streaming.
+- **True streaming**: Audio chunks are yielded incrementally and played as soon as generated — no waiting for full text processing.
+- **Chunking**: Long text is split at sentence boundaries so each chunk fits within Kokoro's ~510 phoneme token window.
 - **Voice mixing**: Individual voice tensors are loaded and combined via weighted averaging before generation.
 
 ## Project structure
@@ -167,11 +224,13 @@ Text input (stdin / --text / --file)
 src/kokoro_cli/
   __init__.py     Package metadata
   __main__.py     python -m kokoro_cli entry point
-  cli.py          Click CLI, input resolution, output routing
+  cli.py          Click CLI group, TTS/serve/stop commands, auto-daemon logic
   config.py       Defaults, 54-voice catalog, language/gender metadata
-  engine.py       MLX model loading, voice parsing/mixing, generation
+  engine.py       MLX model loading, voice parsing/mixing, streaming generation
   chunker.py      Sentence-boundary text splitting, stdin/file readers
   audio.py        StreamPlayer for real-time playback, WAV file saving
+  server.py       Asyncio Unix socket daemon, model warmup, binary audio protocol
+  client.py       Socket client, daemon detection, audio chunk receiver
 ```
 
 ## Performance
@@ -181,8 +240,10 @@ Benchmarked on MacBook Pro M4 Pro (48GB):
 | Metric | Value |
 |--------|-------|
 | Model load (cached) | ~1s |
-| Time to first audio | <0.5s |
-| Throughput | 29x realtime / 436 chars/sec |
+| G2P pipeline init | ~1.5s |
+| Generation speed | 29x realtime / 436 chars/sec |
+| Daemon warm call | ~0.5s total |
+| Direct cold call | ~3.5s total |
 | Model size | ~164MB (bf16) |
 | Audio format | 24kHz mono float32 |
 

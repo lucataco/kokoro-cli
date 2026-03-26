@@ -8,6 +8,9 @@ Usage:
     kokoro --random-voice --text "Surprise me"
     kokoro --voice "af_heart:0.7,af_bella:0.3" --text "Blended voice"
     kokoro --list-voices
+    kokoro serve            # Start daemon in foreground
+    kokoro serve --daemon   # Start daemon in background
+    kokoro stop             # Stop the daemon
 """
 
 import sys
@@ -25,7 +28,62 @@ from kokoro_cli.config import (
 )
 
 
-@click.command(context_settings={"help_option_names": ["-h", "--help"]})
+class KokoroGroup(click.Group):
+    """Custom Click group that treats unknown subcommands as the default TTS command.
+
+    This lets `kokoro --text "hello"` work without a subcommand, while also
+    supporting `kokoro serve` and `kokoro stop` as explicit subcommands.
+    """
+
+    def parse_args(self, ctx, args):
+        # If the first arg is a known subcommand, let Click handle it normally.
+        # Otherwise, prepend "tts" so it routes to the default TTS command.
+        if args and args[0] in self.commands:
+            return super().parse_args(ctx, args)
+
+        # For --help / -h: show the group help (which includes TTS + daemon info)
+        if not args or "--help" in args or "-h" in args:
+            click.echo(ctx.get_help())
+            ctx.exit(0)
+
+        # Route to the default "tts" command
+        args = ["tts"] + list(args)
+        return super().parse_args(ctx, args)
+
+    def format_help(self, ctx, formatter):
+        """Show the default TTS command help as the main help."""
+        tts_cmd = self.commands.get("tts")
+        if tts_cmd:
+            with click.Context(
+                tts_cmd, info_name=ctx.info_name, parent=ctx.parent
+            ) as sub_ctx:
+                tts_cmd.format_help(sub_ctx, formatter)
+        formatter.write("\nDaemon:\n")
+        formatter.write(
+            "  kokoro serve   Start the TTS daemon (keeps model in memory)\n"
+        )
+        formatter.write("  kokoro stop    Stop the TTS daemon\n")
+        formatter.write(
+            "\nRun 'kokoro serve --help' or 'kokoro stop --help' for details.\n"
+        )
+
+
+@click.group(
+    cls=KokoroGroup,
+    context_settings={"help_option_names": ["-h", "--help"]},
+    invoke_without_command=True,
+)
+@click.pass_context
+def main(ctx):
+    """Kokoro TTS — fast local text-to-speech on Apple Silicon."""
+    # If invoked with no args and no piped stdin, show help
+    if ctx.invoked_subcommand is None:
+        click.echo(ctx.get_help())
+
+
+@main.command(
+    name="tts", hidden=True, context_settings={"help_option_names": ["-h", "--help"]}
+)
 @click.option(
     "--text",
     "-t",
@@ -99,7 +157,13 @@ from kokoro_cli.config import (
     default=False,
     help="Show progress output (voice mix, chunk info, etc.).",
 )
-def main(
+@click.option(
+    "--no-daemon",
+    is_flag=True,
+    default=False,
+    help="Skip daemon, use direct mode.",
+)
+def tts_command(
     text: str | None,
     filepath: str | None,
     voice: str,
@@ -110,11 +174,9 @@ def main(
     model: str,
     list_voices: bool,
     verbose: bool,
+    no_daemon: bool,
 ) -> None:
-    """Kokoro TTS — fast local text-to-speech on Apple Silicon.
-
-    Converts text to speech using the Kokoro-82M model via MLX.
-    Reads from stdin by default, or use --text / --file.
+    """Generate speech from text.
 
     \b
     Examples:
@@ -160,11 +222,107 @@ def main(
             err=True,
         )
 
+    # Decide: daemon or direct mode
+    use_daemon = False
+    if not no_daemon:
+        use_daemon = _ensure_daemon(verbose)
+
     # Generate and play/save
     if output:
-        _generate_to_file(chunks, voice_spec, speed, model, lang, output, verbose)
+        _generate_to_file(
+            chunks, voice_spec, speed, model, lang, output, verbose, use_daemon
+        )
     else:
-        _generate_and_stream(chunks, voice_spec, speed, model, lang, verbose)
+        _generate_and_stream(
+            chunks, voice_spec, speed, model, lang, verbose, use_daemon
+        )
+
+
+@main.command()
+@click.option(
+    "--daemon",
+    "-d",
+    is_flag=True,
+    default=False,
+    help="Run in the background (detach from terminal).",
+)
+def serve(daemon: bool) -> None:
+    """Start the kokoro TTS daemon.
+
+    Loads the model into memory and listens for TTS requests on a Unix socket.
+    Subsequent `kokoro` commands connect to this daemon for near-instant speech.
+
+    \b
+    Examples:
+        kokoro serve            # Foreground (shows logs)
+        kokoro serve --daemon   # Background (detach)
+    """
+    from kokoro_cli.server import is_daemon_running, run_server, run_server_daemon
+
+    if is_daemon_running():
+        click.echo("Daemon is already running.", err=True)
+        sys.exit(0)
+
+    if daemon:
+        click.echo("Starting daemon in background...", err=True)
+        run_server_daemon()
+        # Wait for it to be ready
+        from kokoro_cli.client import wait_for_daemon
+
+        if wait_for_daemon(timeout=30.0):
+            click.echo("Daemon started.", err=True)
+        else:
+            click.echo("Error: Daemon failed to start within 30s.", err=True)
+            sys.exit(1)
+    else:
+        # Foreground — blocks until Ctrl+C
+        run_server()
+
+
+@main.command()
+def stop() -> None:
+    """Stop the kokoro TTS daemon."""
+    from kokoro_cli.server import stop_daemon
+
+    if stop_daemon():
+        click.echo("Daemon stopped.", err=True)
+    else:
+        click.echo("No daemon running.", err=True)
+
+
+# ---------------------------------------------------------------------------
+# Internal helpers
+# ---------------------------------------------------------------------------
+
+
+def _ensure_daemon(verbose: bool) -> bool:
+    """Ensure the daemon is running. Auto-starts if needed.
+
+    Returns True if daemon is available, False to fall back to direct mode.
+    """
+    from kokoro_cli.client import daemon_available, wait_for_daemon
+
+    if daemon_available():
+        if verbose:
+            click.echo("Using daemon.", err=True)
+        return True
+
+    # Auto-start daemon in background
+    if verbose:
+        click.echo("Starting daemon...", err=True)
+
+    from kokoro_cli.server import run_server_daemon
+
+    run_server_daemon()
+
+    if wait_for_daemon(timeout=30.0):
+        if verbose:
+            click.echo("Daemon ready.", err=True)
+        return True
+    else:
+        if verbose:
+            click.echo("Daemon startup timed out, using direct mode.", err=True)
+        return False
 
 
 def _resolve_input(text: str | None, filepath: str | None) -> str:
@@ -183,6 +341,31 @@ def _resolve_input(text: str | None, filepath: str | None) -> str:
     return read_stdin()
 
 
+def _generate_audio_chunks(
+    chunk: str,
+    voice: str,
+    speed: float,
+    model_path: str,
+    lang: str,
+    use_daemon: bool,
+):
+    """Yield audio chunks from either daemon or direct engine."""
+    if use_daemon:
+        from kokoro_cli.client import generate_via_daemon
+
+        yield from generate_via_daemon(text=chunk, voice=voice, speed=speed, lang=lang)
+    else:
+        from kokoro_cli.engine import generate
+
+        yield from generate(
+            text=chunk,
+            voice=voice,
+            speed=speed,
+            model_path=model_path,
+            lang_code=lang,
+        )
+
+
 def _generate_and_stream(
     chunks: list[str],
     voice: str,
@@ -190,25 +373,20 @@ def _generate_and_stream(
     model_path: str,
     lang: str,
     verbose: bool,
+    use_daemon: bool,
 ) -> None:
     """Generate audio from chunks and stream to speakers."""
     from kokoro_cli.audio import StreamPlayer
-    from kokoro_cli.engine import generate
 
     try:
         with StreamPlayer() as player:
             for i, chunk in enumerate(chunks):
                 if verbose:
-                    # Show chunk progress on stderr
                     preview = chunk[:60] + "..." if len(chunk) > 60 else chunk
                     click.echo(f"  [{i + 1}/{len(chunks)}] {preview}", err=True)
 
-                for audio_chunk in generate(
-                    text=chunk,
-                    voice=voice,
-                    speed=speed,
-                    model_path=model_path,
-                    lang_code=lang,
+                for audio_chunk in _generate_audio_chunks(
+                    chunk, voice, speed, model_path, lang, use_daemon
                 ):
                     player.write(audio_chunk)
 
@@ -229,10 +407,10 @@ def _generate_to_file(
     lang: str,
     output_path: str,
     verbose: bool,
+    use_daemon: bool,
 ) -> None:
     """Generate audio from chunks and save to a file."""
     from kokoro_cli.audio import save_audio
-    from kokoro_cli.engine import generate
 
     all_audio: list[np.ndarray] = []
 
@@ -242,12 +420,8 @@ def _generate_to_file(
                 preview = chunk[:60] + "..." if len(chunk) > 60 else chunk
                 click.echo(f"  [{i + 1}/{len(chunks)}] {preview}", err=True)
 
-            for audio_chunk in generate(
-                text=chunk,
-                voice=voice,
-                speed=speed,
-                model_path=model_path,
-                lang_code=lang,
+            for audio_chunk in _generate_audio_chunks(
+                chunk, voice, speed, model_path, lang, use_daemon
             ):
                 all_audio.append(audio_chunk)
 
