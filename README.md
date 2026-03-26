@@ -20,7 +20,7 @@ brew install espeak-ng
 **Development (editable):**
 
 ```bash
-git clone <repo-url> && cd kokoro-cli
+cd kokoro-cli
 uv sync
 uv run kokoro --text "Hello world"
 ```
@@ -28,11 +28,12 @@ uv run kokoro --text "Hello world"
 **Global tool (available everywhere):**
 
 ```bash
-uv tool install -e /path/to/kokoro-cli --force --python 3.12
+cd kokoro-cli
+uv tool install -e . --force --python 3.12
 kokoro --text "Hello world"
 ```
 
-The model (`mlx-community/Kokoro-82M-bf16`, ~164MB) is downloaded automatically on first run and cached in `~/.cache/huggingface/`.
+First `uv sync` installs all dependencies including the spaCy English model (~13MB) used for phonemization. The Kokoro model itself (`mlx-community/Kokoro-82M-bf16`, ~164MB) is downloaded automatically on first run and cached in `~/.cache/huggingface/`.
 
 ## Usage
 
