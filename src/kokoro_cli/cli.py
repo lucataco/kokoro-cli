@@ -42,7 +42,7 @@ class KokoroGroup(click.Group):
             return super().parse_args(ctx, args)
 
         # For --help / -h: show the group help (which includes TTS + daemon info)
-        if not args or "--help" in args or "-h" in args:
+        if (not args and sys.stdin.isatty()) or "--help" in args or "-h" in args:
             click.echo(ctx.get_help())
             ctx.exit(0)
 
