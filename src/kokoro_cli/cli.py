@@ -17,6 +17,7 @@ import sys
 
 import click
 import numpy as np
+import setproctitle
 
 from kokoro_cli.config import (
     DEFAULT_MODEL,
@@ -76,6 +77,8 @@ class KokoroGroup(click.Group):
 @click.pass_context
 def main(ctx):
     """Kokoro TTS — fast local text-to-speech on Apple Silicon."""
+    setproctitle.setproctitle("kokoro")
+
     # If invoked with no args and no piped stdin, show help
     if ctx.invoked_subcommand is None:
         click.echo(ctx.get_help())

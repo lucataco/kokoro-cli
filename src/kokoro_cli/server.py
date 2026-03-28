@@ -24,6 +24,7 @@ import time
 from pathlib import Path
 
 import numpy as np
+import setproctitle
 
 KOKORO_DIR = Path.home() / ".kokoro"
 SOCKET_PATH = KOKORO_DIR / "kokoro.sock"
@@ -177,6 +178,7 @@ async def _run_server():
 
 def run_server():
     """Entry point for the foreground server."""
+    setproctitle.setproctitle("kokoro-daemon")
     loop = asyncio.new_event_loop()
 
     def _shutdown(sig, frame):

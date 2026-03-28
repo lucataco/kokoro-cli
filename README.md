@@ -2,7 +2,7 @@
 
 Fast local text-to-speech CLI for Apple Silicon. Runs [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) natively on the Metal GPU via [MLX](https://github.com/Blaizzy/mlx-audio), with streaming audio playback and voice mixing.
 
-**29x realtime** on M4 Pro — generates 13.7 seconds of audio in 0.47 seconds.
+**54x realtime** on M4 Pro — generates 73 seconds of audio in 1.4 seconds.
 
 ## Requirements
 
@@ -129,15 +129,15 @@ Daemon:
 
 ## Daemon mode
 
-The model and G2P pipeline take ~2.7s to load on first use. The daemon keeps them warm in memory so subsequent calls are near-instant.
+The model and G2P pipeline take ~1.4s to load on first use. The daemon keeps them warm in memory so subsequent calls are near-instant.
 
 ### How it works
 
 On first invocation, `kokoro` auto-starts a background daemon that loads the model and listens on a Unix socket (`~/.kokoro/kokoro.sock`). Subsequent calls connect to the daemon instead of loading the model from scratch.
 
 ```
-First call:     auto-starts daemon (~2.7s), then generates via daemon (~0.5s)
-Second call:    connects to warm daemon (~0.5s)
+First call:     auto-starts daemon (~1.4s warmup), then generates via daemon
+Second call:    connects to warm daemon (~35ms to first audio)
 ```
 
 ### Manual daemon management
@@ -160,14 +160,16 @@ kokoro --no-daemon --text "Hello"
 
 | Mode | Time to audio | Notes |
 |------|--------------|-------|
-| Direct (cold) | ~3.5s | Loads model + G2P every time |
-| Daemon (first call) | ~3.4s | Auto-starts daemon, then uses it |
-| Daemon (warm) | ~0.5s | **7x faster** — model already in memory |
+| Direct (cold) | ~2.3s | Loads model + G2P every time |
+| Daemon (first call) | ~1.4s | Auto-starts daemon, then uses it |
+| Daemon (warm) | ~35ms | Model already in memory |
 
 Daemon state is stored in `~/.kokoro/`:
 - `kokoro.sock` — Unix domain socket
 - `kokoro.pid` — daemon process ID
 - `kokoro.log` — daemon log output
+
+Processes show up as `kokoro` (CLI) and `kokoro-daemon` (daemon) in `ps`, `top`, and Activity Monitor instead of generic `python`.
 
 ## Voices
 
@@ -231,7 +233,60 @@ src/kokoro_cli/
   audio.py        StreamPlayer for real-time playback, WAV file saving
   server.py       Asyncio Unix socket daemon, model warmup, binary audio protocol
   client.py       Socket client, daemon detection, audio chunk receiver
+
+tests/              116 tests (unit + integration)
+  conftest.py       Shared fixtures and mocks
+  test_chunker.py   Text chunking logic
+  test_config.py    Voice catalog and config validation
+  test_engine.py    Voice parsing, mixing, and generation (includes @slow integration tests)
+  test_audio.py     Playback and WAV saving
+  test_client.py    Socket client helpers
+  test_server.py    Daemon management helpers
+  test_cli.py       CLI commands via Click CliRunner
+
+benchmarks/         Performance measurement suite
+  bench_tts.py      Cold start, TTFA, throughput, and memory benchmarks
 ```
+
+## Testing
+
+The test suite has 116 tests split into fast unit tests and slower integration tests that require the real MLX model.
+
+```bash
+# Install test dependencies
+uv pip install -e ".[test]"
+
+# Run fast unit tests only (~2s, no model needed)
+pytest tests/ -m "not slow" -v
+
+# Run all tests including integration (~5s, needs model)
+pytest tests/ -v
+
+# Run with coverage report
+pytest tests/ --cov=kokoro_cli --cov-report=term-missing
+```
+
+Integration tests are marked with `@pytest.mark.slow` and can be excluded with `-m "not slow"` for CI environments without the model downloaded.
+
+## Benchmarks
+
+A built-in benchmark suite measures cold start time, time to first audio (TTFA), throughput, and memory usage.
+
+```bash
+# Install benchmark dependencies
+uv pip install -e ".[bench]"
+
+# Run all benchmarks
+python -m benchmarks.bench_tts
+
+# Run a specific benchmark
+python -m benchmarks.bench_tts --only throughput
+
+# Output results as JSON
+python -m benchmarks.bench_tts --json
+```
+
+Available benchmarks: `cold_start`, `ttfa`, `throughput`, `memory`.
 
 ## Performance
 
@@ -239,13 +294,24 @@ Benchmarked on MacBook Pro M4 Pro (48GB):
 
 | Metric | Value |
 |--------|-------|
-| Model load (cached) | ~1s |
-| G2P pipeline init | ~1.5s |
-| Generation speed | 29x realtime / 436 chars/sec |
-| Daemon warm call | ~0.5s total |
-| Direct cold call | ~3.5s total |
+| Model load (cached) | ~0.9s |
+| Full warmup (load + first gen) | ~1.4s |
+| Time to first audio (warm) | ~35ms |
+| Generation throughput | 54x realtime / 908 chars/sec |
 | Model size | ~164MB (bf16) |
+| Memory overhead | ~68MB during generation |
 | Audio format | 24kHz mono float32 |
+
+Throughput scales with input length:
+
+| Input length | Gen time | Audio duration | Realtime factor |
+|-------------|----------|----------------|-----------------|
+| 12 chars | 0.04s | 1.7s | 39x |
+| 85 chars | 0.12s | 6.1s | 52x |
+| 382 chars | 0.42s | 22.8s | 54x |
+| 1234 chars | 1.36s | 72.8s | 54x |
+
+Run `python -m benchmarks.bench_tts` to generate numbers for your hardware.
 
 ## License
 
