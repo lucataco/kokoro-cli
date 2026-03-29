@@ -62,16 +62,20 @@ jobs:
           # Clone the tap repo
           git clone https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/lucataco/homebrew-tap.git /tmp/homebrew-tap
 
-          # Update the formula with new version and SHA
+          # Render the full formula from the template in this repo so the tap
+          # stays in sync with packaging fixes beyond version/SHA updates.
           VERSION="${{ steps.version.outputs.VERSION }}"
           SHA="${{ steps.sha.outputs.SHA256 }}"
 
-          sed -i '' "s|url \".*\"|url \"https://github.com/lucataco/kokoro-cli/archive/refs/tags/v${VERSION}.tar.gz\"|" /tmp/homebrew-tap/Formula/kokoro-cli.rb
-          sed -i '' "s|sha256 \".*\"|sha256 \"${SHA}\"|" /tmp/homebrew-tap/Formula/kokoro-cli.rb
+          cp .github/homebrew/kokoro-cli.rb /tmp/homebrew-tap/Formula/kokoro-cli.rb
+          sed -i '' "s|__VERSION__|${VERSION}|g" /tmp/homebrew-tap/Formula/kokoro-cli.rb
+          sed -i '' "s|__SHA256__|${SHA}|g" /tmp/homebrew-tap/Formula/kokoro-cli.rb
 
           cd /tmp/homebrew-tap
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add Formula/kokoro-cli.rb
-          git commit -m "Update kokoro-cli to v${VERSION}"
-          git push
+          if ! git diff --cached --quiet; then
+            git commit -m "Update kokoro-cli to v${VERSION}"
+            git push
+          fi
