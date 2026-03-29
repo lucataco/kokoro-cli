@@ -17,6 +17,7 @@ Protocol:
 import asyncio
 import json
 import os
+import re
 import signal
 import struct
 import sys
@@ -25,6 +26,18 @@ from pathlib import Path
 
 import numpy as np
 import setproctitle
+
+from kokoro_cli.config import LANG_MAP, VOICES
+
+# Speed limits for input validation
+MIN_SPEED = 0.1
+MAX_SPEED = 5.0
+
+# Regex for voice spec: name or name:weight, comma-separated
+_VOICE_SPEC_RE = re.compile(
+    r"^[a-z][a-z]_[a-z0-9]+(:[0-9]*\.?[0-9]+)?"
+    r"(,[a-z][a-z]_[a-z0-9]+(:[0-9]*\.?[0-9]+)?)*$"
+)
 
 KOKORO_DIR = Path.home() / ".kokoro"
 SOCKET_PATH = KOKORO_DIR / "kokoro.sock"
@@ -45,14 +58,15 @@ def is_daemon_running() -> bool:
 
     if not SOCKET_PATH.exists():
         return False
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     try:
-        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         sock.settimeout(1.0)
         sock.connect(str(SOCKET_PATH))
-        sock.close()
         return True
     except (ConnectionRefusedError, FileNotFoundError, OSError):
         return False
+    finally:
+        sock.close()
 
 
 def _cleanup():
@@ -101,6 +115,26 @@ async def _handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWri
         voice = request.get("voice", "af_sky")
         speed = request.get("speed", 1.0)
         lang = request.get("lang", "a")
+
+        # --- Input validation ---
+        # Validate voice spec format
+        if not isinstance(voice, str) or not _VOICE_SPEC_RE.match(voice):
+            # Check if it's a simple voice name in the catalog
+            if voice not in VOICES:
+                writer.write(struct.pack(">I", 0))
+                await writer.drain()
+                return
+
+        # Clamp speed to safe range
+        try:
+            speed = float(speed)
+        except (TypeError, ValueError):
+            speed = 1.0
+        speed = max(MIN_SPEED, min(MAX_SPEED, speed))
+
+        # Validate language code
+        if not isinstance(lang, str) or lang not in LANG_MAP:
+            lang = "a"  # default to American English
 
         if not text:
             # Send empty response
@@ -211,20 +245,15 @@ def run_server_daemon():
     KOKORO_DIR.mkdir(parents=True, exist_ok=True)
     log_path = KOKORO_DIR / "kokoro.log"
 
-    log_fd = open(log_path, "w")
-    devnull = open(os.devnull, "r")
-
-    # Spawn `kokoro serve` as a detached subprocess
-    proc = subprocess.Popen(
-        [sys.executable, "-m", "kokoro_cli.server"],
-        stdin=devnull,
-        stdout=log_fd,
-        stderr=log_fd,
-        start_new_session=True,  # detach from parent's process group
-    )
-
-    devnull.close()
-    log_fd.close()
+    with open(log_path, "w") as log_fd, open(os.devnull, "r") as devnull:
+        # Spawn `kokoro serve` as a detached subprocess
+        subprocess.Popen(
+            [sys.executable, "-m", "kokoro_cli.server"],
+            stdin=devnull,
+            stdout=log_fd,
+            stderr=log_fd,
+            start_new_session=True,  # detach from parent's process group
+        )
 
 
 # Entry point for the daemon subprocess

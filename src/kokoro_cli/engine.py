@@ -67,7 +67,22 @@ def load_model(model_path: str = DEFAULT_MODEL):
 
     from mlx_audio.tts.utils import load_model as mlx_load_model
 
-    _model = mlx_load_model(model_path)
+    try:
+        _model = mlx_load_model(model_path)
+    except Exception as e:
+        err_msg = str(e).lower()
+        if any(
+            keyword in err_msg
+            for keyword in ("connection", "network", "timeout", "resolve", "http", "url")
+        ):
+            raise RuntimeError(
+                f"Failed to download model '{model_path}'. "
+                "Check your internet connection and try again.\n"
+                "The model is downloaded from HuggingFace on first run (~170MB).\n"
+                f"Original error: {e}"
+            ) from e
+        raise
+
     _model_path = model_path
     return _model
 

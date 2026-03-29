@@ -1,0 +1,80 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          version: "latest"
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Install dependencies
+        run: uv sync --extra test
+
+      - name: Run tests
+        run: uv run pytest -m "not slow" --tb=short -q
+
+      - name: Build package
+        run: uv build
+
+      - name: Get version from tag
+        id: version
+        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+
+      - name: Create source tarball for Homebrew
+        run: |
+          git archive --format=tar.gz --prefix=kokoro-cli-${{ steps.version.outputs.VERSION }}/ HEAD > kokoro-cli-${{ steps.version.outputs.VERSION }}.tar.gz
+
+      - name: Compute SHA256
+        id: sha
+        run: |
+          SHA=$(shasum -a 256 kokoro-cli-${{ steps.version.outputs.VERSION }}.tar.gz | awk '{print $1}')
+          echo "SHA256=${SHA}" >> $GITHUB_OUTPUT
+          echo "SHA256: ${SHA}"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            dist/*
+            kokoro-cli-${{ steps.version.outputs.VERSION }}.tar.gz
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Update Homebrew formula
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        if: env.HOMEBREW_TAP_TOKEN != ''
+        run: |
+          # Clone the tap repo
+          git clone https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/lucataco/homebrew-tap.git /tmp/homebrew-tap
+
+          # Update the formula with new version and SHA
+          VERSION="${{ steps.version.outputs.VERSION }}"
+          SHA="${{ steps.sha.outputs.SHA256 }}"
+
+          sed -i '' "s|version \".*\"|version \"${VERSION}\"|" /tmp/homebrew-tap/Formula/kokoro-cli.rb
+          sed -i '' "s|sha256 \".*\"|sha256 \"${SHA}\"|" /tmp/homebrew-tap/Formula/kokoro-cli.rb
+
+          cd /tmp/homebrew-tap
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/kokoro-cli.rb
+          git commit -m "Update kokoro-cli to v${VERSION}"
+          git push

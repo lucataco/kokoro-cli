@@ -13,6 +13,7 @@ Usage:
     kokoro stop             # Stop the daemon
 """
 
+import platform
 import sys
 
 import click
@@ -23,10 +24,49 @@ from kokoro_cli.config import (
     DEFAULT_MODEL,
     DEFAULT_SPEED,
     DEFAULT_VOICE,
+    LANG_MAP,
     SAMPLE_RATE,
     VOICES,
     get_voice_info,
 )
+
+
+def _check_platform():
+    """Verify we're running on Apple Silicon. Exit with a clear message if not."""
+    if platform.system() != "Darwin":
+        click.echo(
+            "Error: kokoro-cli requires macOS with Apple Silicon (M1+).\n"
+            "This tool uses MLX for GPU-accelerated inference which is only "
+            "available on Apple Silicon Macs.",
+            err=True,
+        )
+        sys.exit(1)
+    machine = platform.machine()
+    if machine != "arm64":
+        click.echo(
+            f"Error: kokoro-cli requires Apple Silicon (arm64), "
+            f"but this Mac is {machine}.\n"
+            "MLX requires Apple Silicon (M1 or later) for GPU acceleration.",
+            err=True,
+        )
+        sys.exit(1)
+
+
+def _validate_voice_spec(voice_spec: str) -> None:
+    """Validate that a voice spec string references known voices.
+
+    Raises SystemExit with error message for unknown voices.
+    """
+    parts = [p.strip() for p in voice_spec.split(",")]
+    for part in parts:
+        name = part.split(":")[0].strip()
+        if name not in VOICES:
+            click.echo(
+                f"Error: Unknown voice '{name}'. "
+                f"Run 'kokoro --list-voices' to see available voices.",
+                err=True,
+            )
+            sys.exit(1)
 
 
 class KokoroGroup(click.Group):
@@ -77,6 +117,7 @@ class KokoroGroup(click.Group):
 @click.pass_context
 def main(ctx):
     """Kokoro TTS — fast local text-to-speech on Apple Silicon."""
+    _check_platform()
     setproctitle.setproctitle("kokoro")
 
     # If invoked with no args and no piped stdin, show help
@@ -119,10 +160,10 @@ def main(ctx):
 @click.option(
     "--speed",
     "-s",
-    type=float,
+    type=click.FloatRange(min=0.1, max=5.0),
     default=DEFAULT_SPEED,
     show_default=True,
-    help="Speech speed multiplier.",
+    help="Speech speed multiplier (0.1-5.0).",
 )
 @click.option(
     "--lang",
@@ -191,6 +232,19 @@ def tts_command(
     if list_voices:
         _print_voices()
         return
+
+    # Validate language code
+    if lang not in LANG_MAP:
+        click.echo(
+            f"Error: Unknown language code '{lang}'. "
+            f"Valid codes: {', '.join(sorted(LANG_MAP.keys()))}",
+            err=True,
+        )
+        sys.exit(1)
+
+    # Validate voice (unless using random)
+    if not random_voice:
+        _validate_voice_spec(voice)
 
     # Resolve input text
     input_text = _resolve_input(text, filepath)

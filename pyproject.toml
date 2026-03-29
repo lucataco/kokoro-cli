@@ -3,8 +3,9 @@ name = "kokoro-cli"
 version = "0.1.0"
 description = "Fast local text-to-speech CLI using Kokoro-82M on Apple Silicon via MLX"
 readme = "README.md"
+license = {text = "Apache-2.0"}
 authors = [
-    { name = "lucataco", email = "lcatacora@cloudflare.com" }
+    { name = "lucataco", email = "me@lucataco.com" }
 ]
 requires-python = ">=3.12,<3.13"
 dependencies = [
