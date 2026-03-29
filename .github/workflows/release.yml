@@ -36,26 +36,23 @@ jobs:
         id: version
         run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
 
-      - name: Create source tarball for Homebrew
-        run: |
-          git archive --format=tar.gz --prefix=kokoro-cli-${{ steps.version.outputs.VERSION }}/ HEAD > kokoro-cli-${{ steps.version.outputs.VERSION }}.tar.gz
-
-      - name: Compute SHA256
-        id: sha
-        run: |
-          SHA=$(shasum -a 256 kokoro-cli-${{ steps.version.outputs.VERSION }}.tar.gz | awk '{print $1}')
-          echo "SHA256=${SHA}" >> $GITHUB_OUTPUT
-          echo "SHA256: ${SHA}"
-
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
           files: |
             dist/*
-            kokoro-cli-${{ steps.version.outputs.VERSION }}.tar.gz
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute SHA256 of GitHub-generated tarball
+        id: sha
+        run: |
+          # Download the tarball that GitHub auto-generates (same URL Homebrew uses)
+          curl -sL "https://github.com/lucataco/kokoro-cli/archive/refs/tags/v${{ steps.version.outputs.VERSION }}.tar.gz" -o github-tarball.tar.gz
+          SHA=$(shasum -a 256 github-tarball.tar.gz | awk '{print $1}')
+          echo "SHA256=${SHA}" >> $GITHUB_OUTPUT
+          echo "SHA256: ${SHA}"
 
       - name: Update Homebrew formula
         env:
@@ -69,7 +66,7 @@ jobs:
           VERSION="${{ steps.version.outputs.VERSION }}"
           SHA="${{ steps.sha.outputs.SHA256 }}"
 
-          sed -i '' "s|version \".*\"|version \"${VERSION}\"|" /tmp/homebrew-tap/Formula/kokoro-cli.rb
+          sed -i '' "s|url \".*\"|url \"https://github.com/lucataco/kokoro-cli/archive/refs/tags/v${VERSION}.tar.gz\"|" /tmp/homebrew-tap/Formula/kokoro-cli.rb
           sed -i '' "s|sha256 \".*\"|sha256 \"${SHA}\"|" /tmp/homebrew-tap/Formula/kokoro-cli.rb
 
           cd /tmp/homebrew-tap
