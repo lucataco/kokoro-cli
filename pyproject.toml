@@ -1,6 +1,6 @@
 [project]
 name = "kokoro-cli"
-version = "0.1.1"
+version = "0.1.2"
 description = "Fast local text-to-speech CLI using Kokoro-82M on Apple Silicon via MLX"
 readme = "README.md"
 license = {text = "Apache-2.0"}

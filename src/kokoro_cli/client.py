@@ -103,6 +103,30 @@ def _recv_exact(sock: socket.socket, n: int) -> bytes | None:
     return bytes(data)
 
 
+def cancel_generation() -> bool:
+    """Send a cancel request to the daemon to stop the current generation.
+
+    Returns:
+        True if the cancel was acknowledged, False on error.
+    """
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    sock.settimeout(2.0)
+    try:
+        sock.connect(str(SOCKET_PATH))
+        request = json.dumps({"cancel": True}) + "\n"
+        sock.sendall(request.encode("utf-8"))
+        # Read the ack
+        data = sock.recv(1024)
+        if data:
+            response = json.loads(data.decode("utf-8").strip())
+            return response.get("status") == "cancelled"
+        return False
+    except (ConnectionRefusedError, FileNotFoundError, OSError, json.JSONDecodeError):
+        return False
+    finally:
+        sock.close()
+
+
 def wait_for_daemon(timeout: float = 30.0, poll_interval: float = 0.2) -> bool:
     """Wait for the daemon to become ready.
 

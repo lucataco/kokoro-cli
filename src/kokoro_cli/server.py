@@ -43,6 +43,11 @@ KOKORO_DIR = Path.home() / ".kokoro"
 SOCKET_PATH = KOKORO_DIR / "kokoro.sock"
 PID_PATH = KOKORO_DIR / "kokoro.pid"
 
+# Shared cancel event: when set, the current generation should stop ASAP.
+# A cancel request from any client sets this; it is cleared at the start
+# of each new generation request.
+_cancel_event = asyncio.Event()
+
 
 def get_socket_path() -> Path:
     return SOCKET_PATH
@@ -103,7 +108,13 @@ def stop_daemon() -> bool:
 
 
 async def _handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
-    """Handle a single TTS request from a client."""
+    """Handle a single TTS or cancel request from a client.
+
+    Cancel protocol:
+        A client can send ``{"cancel": true}`` to immediately stop the
+        current generation. The server sets a shared cancel event which
+        the generation loop checks between audio chunks.
+    """
     try:
         # Read the JSON request line
         line = await asyncio.wait_for(reader.readline(), timeout=10.0)
@@ -111,6 +122,16 @@ async def _handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWri
             return
 
         request = json.loads(line.decode("utf-8").strip())
+
+        # --- Handle cancel request ---
+        if request.get("cancel"):
+            _cancel_event.set()
+            # Send a JSON ack so the caller knows it was received
+            ack = json.dumps({"status": "cancelled"}).encode("utf-8") + b"\n"
+            writer.write(ack)
+            await writer.drain()
+            return
+
         text = request.get("text", "")
         voice = request.get("voice", "af_sky")
         speed = request.get("speed", 1.0)
@@ -142,6 +163,9 @@ async def _handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWri
             await writer.drain()
             return
 
+        # Clear cancel event at the start of a new generation
+        _cancel_event.clear()
+
         from kokoro_cli.engine import generate
 
         for audio_chunk in generate(
@@ -150,6 +174,10 @@ async def _handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWri
             speed=speed,
             lang_code=lang,
         ):
+            # Check if a cancel was requested between chunks
+            if _cancel_event.is_set():
+                break
+
             # Send audio chunk: [4-byte size][audio bytes]
             audio_bytes = audio_chunk.tobytes()
             writer.write(struct.pack(">I", len(audio_bytes)))
